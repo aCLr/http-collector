@@ -1,0 +1,30 @@
+[package]
+name = "http-colletor"
+version = "0.1.0"
+authors = ["Anton Spitsyn <a.ch.clr@gmail.com>"]
+edition = "2018"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+regex = "1"
+reqwest = "0.10.7"
+async-std = "1.6.2"
+futures = "0.3.0"
+url = "2.1.1"
+log = "0.4.8"
+serde = "1.0"
+serde_derive = "1.0"
+chrono = {version ="0.4.13"}
+
+[dependencies.select]
+git = "https://github.com/aCLr/select.rs/"
+branch="regex-attr"
+
+[dependencies.rss]
+version = "1.0"
+features = ["serde", "builders"]
+
+[dependencies.atom_syndication]
+version = "0.9.0"
+features = ["with-serde"]
