@@ -1,5 +1,5 @@
 [package]
-name = "http-colletor"
+name = "http-collector"
 version = "0.1.0"
 authors = ["Anton Spitsyn <a.ch.clr@gmail.com>"]
 edition = "2018"
