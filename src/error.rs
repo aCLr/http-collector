@@ -1,3 +1,5 @@
+use atom_syndication::Error as AtomError;
+use rss::Error as RSSError;
 use std::fmt;
 
 pub type Result<T> = std::result::Result<T, Error>;
@@ -10,6 +12,22 @@ pub struct Error {
 
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "invalid first item to double")
+        write!(f, "{}", self.message)
+    }
+}
+
+impl From<RSSError> for Error {
+    fn from(err: RSSError) -> Self {
+        Self {
+            message: err.to_string(),
+        }
+    }
+}
+
+impl From<AtomError> for Error {
+    fn from(err: AtomError) -> Self {
+        Self {
+            message: err.to_string(),
+        }
     }
 }

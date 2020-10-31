@@ -1,6 +1,6 @@
 use chrono::NaiveDateTime;
 
-#[derive(Serialize)]
+#[derive(Debug, Serialize, Clone)]
 pub struct Feed {
     pub image: Option<String>,
     pub link: String,
@@ -9,7 +9,7 @@ pub struct Feed {
     pub content: Vec<FeedItem>,
 }
 
-#[derive(Serialize, Debug)]
+#[derive(Serialize, Debug, Clone)]
 pub struct FeedItem {
     pub title: String,
     pub content: String,

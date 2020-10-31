@@ -14,44 +14,49 @@ use url::Url;
 use crate::error::{Error, Result};
 use crate::models::*;
 
-pub struct HttpCollector<'a> {
-    sleep_time: Duration,
+#[derive(Clone)]
+pub struct HttpCollector {
     client: Client,
-    get_sources: &'a dyn Fn() -> Vec<(&'a FeedKind, &'a str)>,
-    process_results: &'a dyn Fn(&Feed),
 }
 
-impl<'a> HttpCollector<'a> {
-    pub fn new(
-        sleep_secs: &u64,
-        get_sources: &'a dyn Fn() -> Vec<(&'a FeedKind, &'a str)>,
-        process_results: &'a dyn Fn(&Feed),
-    ) -> HttpCollector<'a> {
+impl HttpCollector {
+    pub fn new() -> HttpCollector {
         HttpCollector {
-            sleep_time: Duration::from_secs(*sleep_secs),
             client: Client::new(),
-            get_sources,
-            process_results,
         }
     }
 
-    pub async fn run(&self) {
+    pub async fn run<FS, FR>(&self, get_sources: FS, process_results: FR, sleep_secs: &u64)
+    where
+        FS: Send + Fn() -> Vec<(FeedKind, String)>,
+        FR: Fn(&Feed, FeedKind, String) + Sync + Send,
+    {
+        let sleep_secs = Duration::from_secs(*sleep_secs);
         loop {
-            let mut sources = (self.get_sources)();
+            let sources = get_sources();
             info!("found sources: {}", sources.len());
             let mut tasks = vec![];
-            for (kind, link) in &mut sources {
+            for (kind, link) in sources {
                 info!("want to scrape: ({:?}) {}", kind, link);
-                tasks.push(self.scrape_and_process_content(kind, link));
+                tasks.push(self.scrape_and_process_content(kind, link, &process_results));
             }
             join_all(tasks).await;
-            sleep(self.sleep_time).await
+            sleep(sleep_secs).await
         }
     }
 
-    async fn scrape_and_process_content(&self, kind: &FeedKind, link: &str) {
-        let content = self.scrape_feed(kind, link).await.unwrap();
-        (self.process_results)(&content)
+    async fn scrape_and_process_content<FR>(
+        &self,
+        kind: FeedKind,
+        link: String,
+        process_results: FR,
+    ) where
+        FR: Fn(&Feed, FeedKind, String) + Sync + Send,
+    {
+        match self.scrape_feed(&kind, link.as_str()).await {
+            Ok(content) => process_results(&content, kind, link),
+            Err(err) => warn!("{}", err),
+        };
     }
 
     async fn scrape_feed(&self, kind: &FeedKind, link: &str) -> Result<Feed> {
@@ -66,7 +71,7 @@ impl<'a> HttpCollector<'a> {
     }
 
     async fn scrape_rss(&self, link: &str) -> Result<Feed> {
-        let channel = Channel::from_str(self.scrape(link).await?.as_str()).unwrap();
+        let channel = Channel::from_str(self.scrape(link).await?.as_str())?;
         let mut feed_items: Vec<FeedItem> = vec![];
         for item in channel.items() {
             let description = item.description().unwrap_or_default();
@@ -97,10 +102,7 @@ impl<'a> HttpCollector<'a> {
     }
 
     async fn scrape_atom(&self, link: &str) -> Result<Feed> {
-        let channel =
-            AtomFeed::from_str(self.scrape(link).await?.as_str()).map_err(|_err| Error {
-                message: "can't parse".to_string(),
-            })?;
+        let channel = AtomFeed::from_str(self.scrape(link).await?.as_str())?;
         let image = match channel.icon() {
             None => None,
             Some(img) => Some(img.to_string()),
@@ -226,7 +228,7 @@ impl<'a> HttpCollector<'a> {
     }
 }
 
-pub fn get_image(content: &str) -> Option<String> {
+fn get_image(content: &str) -> Option<String> {
     let parsed_doc = Document::from_read(content.as_bytes());
     match parsed_doc {
         Ok(doc) => {
