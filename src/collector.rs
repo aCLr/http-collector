@@ -1,4 +1,5 @@
 extern crate select;
+use async_trait::async_trait;
 
 use async_std::task::sleep;
 use atom_syndication::Feed as AtomFeed;
@@ -14,6 +15,11 @@ use url::Url;
 use crate::error::{Error, Result};
 use crate::models::*;
 
+#[async_trait]
+pub trait ResultsHandler {
+    async fn process(&self, update: &Feed, feed_kind: FeedKind, link: String);
+}
+
 #[derive(Clone)]
 pub struct HttpCollector {
     client: Client,
@@ -26,10 +32,13 @@ impl HttpCollector {
         }
     }
 
-    pub async fn run<FS, FR>(&self, get_sources: FS, process_results: FR, sleep_secs: &u64)
-    where
+    pub async fn run<FS>(
+        &self,
+        get_sources: FS,
+        process_results: &impl ResultsHandler,
+        sleep_secs: &u64,
+    ) where
         FS: Send + Fn() -> Vec<(FeedKind, String)>,
-        FR: Fn(&Feed, FeedKind, String) + Sync + Send,
     {
         let sleep_secs = Duration::from_secs(*sleep_secs);
         loop {
@@ -38,23 +47,21 @@ impl HttpCollector {
             let mut tasks = vec![];
             for (kind, link) in sources {
                 info!("want to scrape: ({:?}) {}", kind, link);
-                tasks.push(self.scrape_and_process_content(kind, link, &process_results));
+                tasks.push(self.scrape_and_process_content(kind, link, process_results));
             }
             join_all(tasks).await;
             sleep(sleep_secs).await
         }
     }
 
-    async fn scrape_and_process_content<FR>(
+    async fn scrape_and_process_content(
         &self,
         kind: FeedKind,
         link: String,
-        process_results: FR,
-    ) where
-        FR: Fn(&Feed, FeedKind, String) + Sync + Send,
-    {
+        process_results: &impl ResultsHandler,
+    ) {
         match self.scrape_feed(&kind, link.as_str()).await {
-            Ok(content) => process_results(&content, kind, link),
+            Ok(content) => process_results.process(&content, kind, link).await,
             Err(err) => warn!("{}", err),
         };
     }

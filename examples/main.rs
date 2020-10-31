@@ -1,7 +1,9 @@
+use async_trait::async_trait;
 use chrono::NaiveDateTime;
-use http_collector::collector::HttpCollector;
+use http_collector::collector::{HttpCollector, ResultsHandler};
 use http_collector::models::{Feed, FeedItem, FeedKind};
-use std::sync::{mpsc, Arc, Mutex};
+use std::sync::Arc;
+use tokio::sync::{mpsc, Mutex};
 
 #[derive(Debug)]
 pub struct ForFeedItem {
@@ -50,27 +52,37 @@ impl From<Feed> for ForFeed {
 
 #[tokio::main]
 async fn main() {
-    let (sender, receiver) = mpsc::channel::<(Feed, FeedKind, String)>();
+    let (sender, mut receiver) = mpsc::channel::<(Feed, FeedKind, String)>(2000);
     let sender = Arc::new(Mutex::new(sender));
-    let res = get_process_results(sender.clone());
+
+    let proc = Handler::new(sender);
     let collector = Arc::new(HttpCollector::new());
     let crun = collector.clone();
-    tokio::spawn(async move { crun.run(&get_sources, &res, &3).await });
+    tokio::spawn(async move { crun.run(&get_sources, &proc, &3).await });
     let mut x: i32 = 1;
     while x >= 0 {
-        println!("{:?}", receiver.recv().unwrap());
+        println!("{:?}", receiver.recv().await);
         x -= 1
     }
     let detected = collector.detect_feeds("https://google.com").await;
     println!("{:?}", detected);
 }
 
-fn get_process_results(
+pub struct Handler {
     channel: Arc<Mutex<mpsc::Sender<(Feed, FeedKind, String)>>>,
-) -> impl Fn(&Feed, FeedKind, String) + 'static + Send {
-    move |update, feed_kind, link| {
-        let local = channel.lock().unwrap();
-        local.send((update.clone(), feed_kind, link)).unwrap();
+}
+
+impl Handler {
+    pub fn new(channel: Arc<Mutex<mpsc::Sender<(Feed, FeedKind, String)>>>) -> Self {
+        Self { channel }
+    }
+}
+
+#[async_trait]
+impl ResultsHandler for Handler {
+    async fn process(&self, update: &Feed, feed_kind: FeedKind, link: String) {
+        let mut local = self.channel.lock().await;
+        local.send((update.clone(), feed_kind, link)).await.unwrap();
     }
 }
 
