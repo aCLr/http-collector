@@ -17,7 +17,7 @@ use crate::models::*;
 
 #[async_trait]
 pub trait ResultsHandler {
-    async fn process(&self, update: &Feed, feed_kind: FeedKind, link: String);
+    async fn process(&self, result: Result<(&Feed, FeedKind, String)>);
 }
 
 #[derive(Clone)]
@@ -43,13 +43,14 @@ impl HttpCollector {
         let sleep_secs = Duration::from_secs(*sleep_secs);
         loop {
             let sources = get_sources();
-            info!("found sources: {}", sources.len());
+            debug!("retrieve sources: {}", sources.len());
             let mut tasks = vec![];
             for (kind, link) in sources {
-                info!("want to scrape: ({:?}) {}", kind, link);
+                debug!("want to scrape: ({:?}) {}", kind, link);
                 tasks.push(self.scrape_and_process_content(kind, link, process_results));
             }
             join_all(tasks).await;
+            debug!("sleeping for {} seconds", sleep_secs.as_secs());
             sleep(sleep_secs).await
         }
     }
@@ -61,8 +62,8 @@ impl HttpCollector {
         process_results: &impl ResultsHandler,
     ) {
         match self.scrape_feed(&kind, link.as_str()).await {
-            Ok(content) => process_results.process(&content, kind, link).await,
-            Err(err) => warn!("{}", err),
+            Ok(content) => process_results.process(Ok((&content, kind, link))).await,
+            Err(err) => process_results.process(Err(err)).await,
         };
     }
 
