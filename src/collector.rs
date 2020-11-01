@@ -1,7 +1,6 @@
 extern crate select;
 use async_trait::async_trait;
 
-use async_std::task::sleep;
 use atom_syndication::Feed as AtomFeed;
 use futures::future::join_all;
 use reqwest::{Client, Response};
@@ -9,11 +8,11 @@ use rss::Channel;
 use select::document::Document;
 use select::predicate::{Attr, Name, Predicate};
 use std::str::FromStr;
-use std::time::Duration;
 use url::Url;
 
 use crate::error::{Error, Result};
 use crate::models::*;
+use tokio::sync::mpsc;
 
 #[async_trait]
 pub trait ResultsHandler {
@@ -32,17 +31,13 @@ impl HttpCollector {
         }
     }
 
-    pub async fn run<FS>(
+    pub async fn run(
         &self,
-        get_sources: FS,
+        mut sources_receiver: mpsc::Receiver<Vec<(FeedKind, String)>>,
         process_results: &impl ResultsHandler,
-        sleep_secs: &u64,
-    ) where
-        FS: Send + Fn() -> Vec<(FeedKind, String)>,
+    )
     {
-        let sleep_secs = Duration::from_secs(*sleep_secs);
-        loop {
-            let sources = get_sources();
+        while let Some(sources) = sources_receiver.recv().await {
             debug!("retrieve sources: {}", sources.len());
             let mut tasks = vec![];
             for (kind, link) in sources {
@@ -50,8 +45,6 @@ impl HttpCollector {
                 tasks.push(self.scrape_and_process_content(kind, link, process_results));
             }
             join_all(tasks).await;
-            debug!("sleeping for {} seconds", sleep_secs.as_secs());
-            sleep(sleep_secs).await
         }
     }
 

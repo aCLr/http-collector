@@ -59,8 +59,16 @@ async fn main() {
     let proc = Handler::new(sender);
     let collector = Arc::new(HttpCollector::new());
     let crun = collector.clone();
-    tokio::spawn(async move { crun.run(&get_sources, &proc, &3).await });
-    let mut x: i32 = 1;
+    let (mut sources_sender, sources_receiver) = mpsc::channel::<Vec<(FeedKind, String)>>(2000);
+    tokio::spawn(async move { crun.run(sources_receiver, &proc).await });
+    tokio::spawn(async move { loop {
+        sources_sender.send(get_sources()).await.unwrap();
+        sources_sender.send(get_sources()).await.unwrap();
+        sources_sender.send(get_sources()).await.unwrap();
+        sources_sender.send(get_sources()).await.unwrap();
+        sources_sender.send(get_sources()).await.unwrap();
+    } });
+    let mut x: i32 = 7;
     while x >= 0 {
         println!("{:?}", receiver.recv().await);
         x -= 1
