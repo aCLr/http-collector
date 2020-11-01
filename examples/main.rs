@@ -1,6 +1,7 @@
 use async_trait::async_trait;
 use chrono::NaiveDateTime;
 use http_collector::collector::{HttpCollector, ResultsHandler};
+use http_collector::error::{Error, Result};
 use http_collector::models::{Feed, FeedItem, FeedKind};
 use std::sync::Arc;
 use tokio::sync::{mpsc, Mutex};
@@ -52,7 +53,7 @@ impl From<Feed> for ForFeed {
 
 #[tokio::main]
 async fn main() {
-    let (sender, mut receiver) = mpsc::channel::<(Feed, FeedKind, String)>(2000);
+    let (sender, mut receiver) = mpsc::channel::<Result<(Feed, FeedKind, String)>>(2000);
     let sender = Arc::new(Mutex::new(sender));
 
     let proc = Handler::new(sender);
@@ -69,20 +70,26 @@ async fn main() {
 }
 
 pub struct Handler {
-    channel: Arc<Mutex<mpsc::Sender<(Feed, FeedKind, String)>>>,
+    channel: Arc<Mutex<mpsc::Sender<Result<(Feed, FeedKind, String)>>>>,
 }
 
 impl Handler {
-    pub fn new(channel: Arc<Mutex<mpsc::Sender<(Feed, FeedKind, String)>>>) -> Self {
+    pub fn new(channel: Arc<Mutex<mpsc::Sender<Result<(Feed, FeedKind, String)>>>>) -> Self {
         Self { channel }
     }
 }
 
 #[async_trait]
 impl ResultsHandler for Handler {
-    async fn process(&self, update: &Feed, feed_kind: FeedKind, link: String) {
+    async fn process(&self, result: Result<(&Feed, FeedKind, String)>) {
+        let update = match result {
+            Ok((updates, kind, link)) => Ok((updates.clone(), kind, link)),
+            Err(err) => Err(Error {
+                message: err.to_string(),
+            }),
+        };
         let mut local = self.channel.lock().await;
-        local.send((update.clone(), feed_kind, link)).await.unwrap();
+        local.send(update).await.unwrap();
     }
 }
 
