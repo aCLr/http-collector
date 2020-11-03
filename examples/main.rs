@@ -1,8 +1,9 @@
 use async_trait::async_trait;
 use chrono::NaiveDateTime;
-use http_collector::collector::{HttpCollector, ResultsHandler};
+use http_collector::collector::{Cache, HttpCollector, ResultsHandler};
 use http_collector::error::{Error, Result};
 use http_collector::models::{Feed, FeedItem, FeedKind};
+use std::borrow::BorrowMut;
 use std::sync::Arc;
 use tokio::sync::{mpsc, Mutex};
 
@@ -59,15 +60,18 @@ async fn main() {
     let proc = Handler::new(sender);
     let collector = Arc::new(HttpCollector::new());
     let crun = collector.clone();
-    let (mut sources_sender, sources_receiver) = mpsc::channel::<Vec<(FeedKind, String)>>(2000);
+    let (mut sources_sender, sources_receiver) =
+        mpsc::channel::<Vec<(Option<FeedKind>, String)>>(2000);
     tokio::spawn(async move { crun.run(sources_receiver, &proc).await });
-    tokio::spawn(async move { loop {
-        sources_sender.send(get_sources()).await.unwrap();
-        sources_sender.send(get_sources()).await.unwrap();
-        sources_sender.send(get_sources()).await.unwrap();
-        sources_sender.send(get_sources()).await.unwrap();
-        sources_sender.send(get_sources()).await.unwrap();
-    } });
+    tokio::spawn(async move {
+        loop {
+            sources_sender.send(get_sources()).await.unwrap();
+            sources_sender.send(get_sources()).await.unwrap();
+            sources_sender.send(get_sources()).await.unwrap();
+            sources_sender.send(get_sources()).await.unwrap();
+            sources_sender.send(get_sources()).await.unwrap();
+        }
+    });
     let mut x: i32 = 7;
     while x >= 0 {
         println!("{:?}", receiver.recv().await);
@@ -101,13 +105,17 @@ impl ResultsHandler for Handler {
     }
 }
 
-fn get_sources() -> Vec<(FeedKind, String)> {
+fn get_sources() -> Vec<(Option<FeedKind>, String)> {
     vec![
         (
-            FeedKind::RSS,
+            Some(FeedKind::RSS),
             "https://habr.com/ru/rss/best/daily/?fl=ru".to_string(),
         ),
-        (FeedKind::WP, "https://google.com".to_string()),
-        (FeedKind::Atom, "https://google.com".to_string()),
+        (Some(FeedKind::WP), "https://google.com".to_string()),
+        (Some(FeedKind::Atom), "https://google.com".to_string()),
+        (
+            None,
+            "https://habr.com/ru/rss/best/daily/?fl=ru".to_string(),
+        ),
     ]
 }

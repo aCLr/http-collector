@@ -18,7 +18,7 @@ pub struct FeedItem {
     pub image_link: Option<String>,
 }
 
-#[derive(Deserialize, Serialize, Debug, Copy, Clone)]
+#[derive(Deserialize, Serialize, Debug, Copy, Clone, PartialEq)]
 pub enum FeedKind {
     RSS,
     Atom,

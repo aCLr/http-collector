@@ -19,24 +19,53 @@ pub trait ResultsHandler {
     async fn process(&self, result: Result<(&Feed, FeedKind, String)>);
 }
 
-#[derive(Clone)]
-pub struct HttpCollector {
-    client: Client,
+#[async_trait]
+pub trait Cache {
+    async fn get(&self, link: &str) -> Option<FeedKind>;
+    async fn set(&self, link: &str, feed_kind: &FeedKind) -> Result<()>;
 }
 
-impl HttpCollector {
-    pub fn new() -> HttpCollector {
+struct CacheStub {}
+
+#[async_trait]
+impl Cache for CacheStub {
+    async fn get(&self, link: &str) -> Option<FeedKind> {
+        None
+    }
+
+    async fn set(&self, link: &str, feed_kind: &FeedKind) -> Result<()> {
+        Ok(())
+    }
+}
+
+#[derive(Clone)]
+pub struct HttpCollector<C: Cache> {
+    client: Client,
+    cache: C,
+}
+
+impl HttpCollector<CacheStub> {
+    pub fn new() -> HttpCollector<CacheStub> {
         HttpCollector {
             client: Client::new(),
+            cache: CacheStub {},
         }
+    }
+}
+
+impl<C> HttpCollector<C>
+where
+    C: Cache,
+{
+    pub fn with_cache(&mut self, cache: C) {
+        self.cache = cache
     }
 
     pub async fn run(
         &self,
-        mut sources_receiver: mpsc::Receiver<Vec<(FeedKind, String)>>,
+        mut sources_receiver: mpsc::Receiver<Vec<(Option<FeedKind>, String)>>,
         process_results: &impl ResultsHandler,
-    )
-    {
+    ) {
         while let Some(sources) = sources_receiver.recv().await {
             debug!("retrieve sources: {}", sources.len());
             let mut tasks = vec![];
@@ -50,17 +79,54 @@ impl HttpCollector {
 
     async fn scrape_and_process_content(
         &self,
-        kind: FeedKind,
+        kind: Option<FeedKind>,
         link: String,
         process_results: &impl ResultsHandler,
     ) {
-        match self.scrape_feed(&kind, link.as_str()).await {
-            Ok(content) => process_results.process(Ok((&content, kind, link))).await,
+        match self.scrape_feed(kind, link.as_str()).await {
+            Ok(content) => {
+                process_results
+                    .process(Ok((&content, content.kind, link)))
+                    .await
+            }
             Err(err) => process_results.process(Err(err)).await,
         };
     }
 
-    async fn scrape_feed(&self, kind: &FeedKind, link: &str) -> Result<Feed> {
+    async fn scrape_unknown_feed_kind(&self, link: &str) -> Result<Feed> {
+        let content = self.scrape(link).await?;
+        let feeds = self.traverse_parsers(link, content.as_str());
+        match feeds.len() {
+            0 => Err(Error {
+                message: "feeds not found".to_string(),
+            }),
+            1 => {
+                let feed = feeds.first().unwrap();
+                Ok(feed.clone())
+            }
+            _ => {
+                let feed = feeds
+                    .iter()
+                    .find(|f| f.kind == FeedKind::RSS)
+                    .or(Some(feeds.first().unwrap()))
+                    .unwrap();
+                Ok(feed.clone())
+            }
+        }
+    }
+
+    async fn scrape_feed(&self, kind: Option<FeedKind>, link: &str) -> Result<Feed> {
+        let kind = match kind {
+            None => match self.cache.get(link).await {
+                None => {
+                    let feed = self.scrape_unknown_feed_kind(link).await?;
+                    self.cache.set(link, &feed.kind);
+                    return Ok(feed);
+                }
+                Some(kind) => kind,
+            },
+            Some(kind) => kind.clone(),
+        };
         let result = match kind {
             FeedKind::RSS => self.scrape_rss(link).await?,
             FeedKind::Atom => self.scrape_atom(link).await?,
@@ -72,67 +138,11 @@ impl HttpCollector {
     }
 
     async fn scrape_rss(&self, link: &str) -> Result<Feed> {
-        let channel = Channel::from_str(self.scrape(link).await?.as_str())?;
-        let mut feed_items: Vec<FeedItem> = vec![];
-        for item in channel.items() {
-            let description = item.description().unwrap_or_default();
-            let mut guid = String::new();
-            if item.guid().is_some() {
-                guid.push_str(item.guid().unwrap().value())
-            } else if item.link().is_some() {
-                guid.push_str(item.link().unwrap())
-            } else {
-                warn!("can't get unique id for record {:?}", item);
-                continue;
-            }
-            feed_items.push(FeedItem {
-                title: item.title().unwrap_or_default().to_string(),
-                pub_date: get_feed_pub_date(item.pub_date()),
-                content: item.content().unwrap_or_default().to_string(),
-                guid,
-                image_link: get_image(description),
-            })
-        }
-        Ok(Feed {
-            image: channel.image().map_or(None, |i| Some(i.url().to_string())),
-            link: link.to_string(),
-            kind: FeedKind::RSS,
-            name: channel.title().to_string(),
-            content: feed_items,
-        })
+        parse_rss_feed(link, self.scrape(link).await?.as_str())
     }
 
     async fn scrape_atom(&self, link: &str) -> Result<Feed> {
-        let channel = AtomFeed::from_str(self.scrape(link).await?.as_str())?;
-        let image = match channel.icon() {
-            None => None,
-            Some(img) => Some(img.to_string()),
-        };
-        let mut feed_items = vec![];
-        for item in channel.entries() {
-            let description = item.summary().unwrap_or_default();
-            let image = get_image(description);
-            feed_items.push(FeedItem {
-                title: item.title().to_string(),
-                image_link: image,
-                pub_date: item.published().unwrap().naive_utc(),
-                content: item
-                    .content()
-                    .unwrap()
-                    .value
-                    .to_owned()
-                    .unwrap_or_default()
-                    .to_string(),
-                guid: item.id.to_string(),
-            })
-        }
-        Ok(Feed {
-            image,
-            link: link.to_string(),
-            kind: FeedKind::RSS,
-            name: channel.title,
-            content: feed_items,
-        })
+        parse_atom_feed(link, self.scrape(link).await?.as_str())
     }
 
     async fn scrape(&self, link: &str) -> Result<String> {
@@ -146,12 +156,15 @@ impl HttpCollector {
         })?)
     }
 
-    pub async fn detect_feeds(&self, link: &str) -> Result<Vec<Feed>> {
-        let scraped = self.scrape(link).await?;
+    async fn detect_possible_feeds(
+        &self,
+        link: &str,
+        scraped_content: &str,
+    ) -> Result<Vec<(String, FeedKind)>> {
         let page_scrape_url = Url::parse(link).unwrap();
         let mut for_check: Vec<(String, FeedKind)> = vec![];
         // detect rss content
-        let parsed_doc = Document::from_read(scraped.as_bytes()).map_err(|_| Error {
+        let parsed_doc = Document::from_read(scraped_content.as_bytes()).map_err(|_| Error {
             message: "cannot parse html".to_string(),
         })?;
 
@@ -188,12 +201,8 @@ impl HttpCollector {
                     FeedKind::RSS,
                 ));
             };
-        }
-
+        };
         if for_check.is_empty() {
-            // TODO: уже сходили сюда, нет смысла ходить ещё раз
-            for_check.push((page_scrape_url.to_string(), FeedKind::RSS));
-            debug!("not found any feeds for checks, trying to detect rss links");
             for element in parsed_doc.find(Attr("href", regex::Regex::new("/rss").unwrap())) {
                 element.attr("href").map(|href| {
                     let mut link = String::new();
@@ -206,26 +215,53 @@ impl HttpCollector {
                 });
             }
         };
+        Ok(for_check)
+    }
+
+    pub fn traverse_parsers(&self, link: &str, content: &str) -> Vec<Feed> {
+        let mut result = vec![];
+        let parsers: Vec<&dyn Fn(&str, &str) -> Result<Feed>> =
+            vec![&parse_rss_feed, &parse_atom_feed];
+        for parser in parsers {
+            match parser(link, content) {
+                Ok(feed) => {
+                    result.push(feed);
+                }
+                Err(err) => {
+                    trace!("not parsed: {}", err);
+                }
+            }
+        }
+        result
+    }
+
+    pub async fn detect_feeds(&self, link: &str) -> Result<Vec<Feed>> {
+        let content = self.scrape(link).await?;
+
+        let mut result = self.traverse_parsers(link, content.as_str());
+        let for_check = self.detect_possible_feeds(link, content.as_str()).await?;
+
         let mut checks = vec![];
         for_check
             .iter()
             .map(|feed| {
                 debug!("going to check {:?}", feed);
-                checks.push(self.scrape_feed(&feed.1, feed.0.as_str()));
+                checks.push(self.scrape_feed(Some(feed.1), feed.0.as_str()));
             })
             .for_each(drop);
-        Ok(join_all(checks)
+        join_all(checks)
             .await
             .into_iter()
             .map(|check_result| match check_result {
-                Ok(feed) => Some(feed),
+                Ok(feed) => {
+                    result.push(feed);
+                }
                 Err(err) => {
                     error!("{}", err.message.as_str());
-                    None
                 }
             })
-            .filter_map(|op| op)
-            .collect())
+            .for_each(drop);
+        Ok(result)
     }
 }
 
@@ -275,4 +311,68 @@ fn get_feed_pub_date(pub_date: Option<&str>) -> chrono::NaiveDateTime {
     let pub_date = chrono::DateTime::parse_from_rfc2822(pub_date.unwrap_or_default())
         .unwrap_or(current_time());
     pub_date.naive_utc()
+}
+
+fn parse_atom_feed(link: &str, content: &str) -> Result<Feed> {
+    let channel = AtomFeed::from_str(content)?;
+    let image = match channel.icon() {
+        None => None,
+        Some(img) => Some(img.to_string()),
+    };
+    let mut feed_items = vec![];
+    for item in channel.entries() {
+        let description = item.summary().unwrap_or_default();
+        let image = get_image(description);
+        feed_items.push(FeedItem {
+            title: item.title().to_string(),
+            image_link: image,
+            pub_date: item.published().unwrap().naive_utc(),
+            content: item
+                .content()
+                .unwrap()
+                .value
+                .to_owned()
+                .unwrap_or_default()
+                .to_string(),
+            guid: item.id.to_string(),
+        })
+    }
+    Ok(Feed {
+        image,
+        link: link.to_string(),
+        kind: FeedKind::RSS,
+        name: channel.title,
+        content: feed_items,
+    })
+}
+
+fn parse_rss_feed(link: &str, content: &str) -> Result<Feed> {
+    let channel = Channel::from_str(content)?;
+    let mut feed_items: Vec<FeedItem> = vec![];
+    for item in channel.items() {
+        let description = item.description().unwrap_or_default();
+        let mut guid = String::new();
+        if item.guid().is_some() {
+            guid.push_str(item.guid().unwrap().value())
+        } else if item.link().is_some() {
+            guid.push_str(item.link().unwrap())
+        } else {
+            warn!("can't get unique id for record {:?}", item);
+            continue;
+        }
+        feed_items.push(FeedItem {
+            title: item.title().unwrap_or_default().to_string(),
+            pub_date: get_feed_pub_date(item.pub_date()),
+            content: item.content().unwrap_or_default().to_string(),
+            guid,
+            image_link: get_image(description),
+        })
+    }
+    Ok(Feed {
+        image: channel.image().map_or(None, |i| Some(i.url().to_string())),
+        link: link.to_string(),
+        kind: FeedKind::RSS,
+        name: channel.title().to_string(),
+        content: feed_items,
+    })
 }
