@@ -1,6 +1,7 @@
 use atom_syndication::Error as AtomError;
 use rss::Error as RSSError;
 use std::fmt;
+use url::ParseError;
 
 pub type Result<T> = std::result::Result<T, Error>;
 
@@ -26,6 +27,14 @@ impl From<RSSError> for Error {
 
 impl From<AtomError> for Error {
     fn from(err: AtomError) -> Self {
+        Self {
+            message: err.to_string(),
+        }
+    }
+}
+
+impl From<url::ParseError> for Error {
+    fn from(err: url::ParseError) -> Self {
         Self {
             message: err.to_string(),
         }

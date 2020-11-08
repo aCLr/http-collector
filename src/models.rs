@@ -11,7 +11,7 @@ pub struct Feed {
 
 #[derive(Serialize, Debug, Clone)]
 pub struct FeedItem {
-    pub title: String,
+    pub title: Option<String>,
     pub content: String,
     pub pub_date: NaiveDateTime,
     pub guid: String,

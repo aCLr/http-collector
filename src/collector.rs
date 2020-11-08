@@ -25,7 +25,7 @@ pub trait Cache {
     async fn set(&self, link: &str, feed_kind: &FeedKind) -> Result<()>;
 }
 
-struct CacheStub {}
+pub struct CacheStub {}
 
 #[async_trait]
 impl Cache for CacheStub {
@@ -100,18 +100,13 @@ where
             0 => Err(Error {
                 message: "feeds not found".to_string(),
             }),
-            1 => {
-                let feed = feeds.first().unwrap();
-                Ok(feed.clone())
-            }
-            _ => {
-                let feed = feeds
-                    .iter()
-                    .find(|f| f.kind == FeedKind::RSS)
-                    .or(Some(feeds.first().unwrap()))
-                    .unwrap();
-                Ok(feed.clone())
-            }
+            1 => Ok(feeds.first().unwrap().clone()),
+            _ => Ok(feeds
+                .iter()
+                .find(|f| f.kind == FeedKind::RSS)
+                .or(Some(feeds.first().unwrap()))
+                .unwrap()
+                .clone()),
         }
     }
 
@@ -161,7 +156,7 @@ where
         link: &str,
         scraped_content: &str,
     ) -> Result<Vec<(String, FeedKind)>> {
-        let page_scrape_url = Url::parse(link).unwrap();
+        let page_scrape_url = Url::parse(link)?;
         let mut for_check: Vec<(String, FeedKind)> = vec![];
         // detect rss content
         let parsed_doc = Document::from_read(scraped_content.as_bytes()).map_err(|_| Error {
@@ -190,16 +185,10 @@ where
             .next()
         {
             if let Some(href) = found_wp.attr("href") {
-                let parsed_href = Url::parse(href).unwrap();
+                let parsed_href = Url::parse(href)?;
 
-                for_check.push((
-                    parsed_href.join("wp/v2/posts").unwrap().to_string(),
-                    FeedKind::WP,
-                ));
-                for_check.push((
-                    page_scrape_url.join("feed/").unwrap().to_string(),
-                    FeedKind::RSS,
-                ));
+                for_check.push((parsed_href.join("wp/v2/posts")?.to_string(), FeedKind::WP));
+                for_check.push((page_scrape_url.join("feed/")?.to_string(), FeedKind::RSS));
             };
         };
         if for_check.is_empty() {
@@ -321,19 +310,16 @@ fn parse_atom_feed(link: &str, content: &str) -> Result<Feed> {
     };
     let mut feed_items = vec![];
     for item in channel.entries() {
-        let description = item.summary().unwrap_or_default();
+        let description = item
+            .content()
+            .map_or(item.summary(), |f| f.value())
+            .unwrap_or_default();
         let image = get_image(description);
         feed_items.push(FeedItem {
-            title: item.title().to_string(),
+            title: Some(item.title().to_string()),
             image_link: image,
-            pub_date: item.published().unwrap().naive_utc(),
-            content: item
-                .content()
-                .unwrap()
-                .value
-                .to_owned()
-                .unwrap_or_default()
-                .to_string(),
+            pub_date: item.published().unwrap_or(item.updated()).naive_utc(),
+            content: description.to_string(),
             guid: item.id.to_string(),
         })
     }
@@ -350,7 +336,9 @@ fn parse_rss_feed(link: &str, content: &str) -> Result<Feed> {
     let channel = Channel::from_str(content)?;
     let mut feed_items: Vec<FeedItem> = vec![];
     for item in channel.items() {
-        let description = item.description().unwrap_or_default();
+        let description = item
+            .content()
+            .unwrap_or(item.description().unwrap_or_default());
         let mut guid = String::new();
         if item.guid().is_some() {
             guid.push_str(item.guid().unwrap().value())
@@ -361,9 +349,9 @@ fn parse_rss_feed(link: &str, content: &str) -> Result<Feed> {
             continue;
         }
         feed_items.push(FeedItem {
-            title: item.title().unwrap_or_default().to_string(),
+            title: item.title().map(|f| f.to_string()),
             pub_date: get_feed_pub_date(item.pub_date()),
-            content: item.content().unwrap_or_default().to_string(),
+            content: description.to_string(),
             guid,
             image_link: get_image(description),
         })
