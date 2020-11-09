@@ -1,15 +1,14 @@
 use async_trait::async_trait;
 use chrono::NaiveDateTime;
-use http_collector::collector::{Cache, HttpCollector, ResultsHandler};
+use http_collector::collector::{HttpCollector, ResultsHandler};
 use http_collector::error::{Error, Result};
 use http_collector::models::{Feed, FeedItem, FeedKind};
-use std::borrow::BorrowMut;
 use std::sync::Arc;
 use tokio::sync::{mpsc, Mutex};
 
 #[derive(Debug)]
 pub struct ForFeedItem {
-    pub title: String,
+    pub title: Option<String>,
     pub content: String,
     pub pub_date: NaiveDateTime,
     pub guid: String,
@@ -19,7 +18,7 @@ pub struct ForFeedItem {
 impl From<&FeedItem> for ForFeedItem {
     fn from(fi: &FeedItem) -> Self {
         Self {
-            title: fi.title.to_string(),
+            title: fi.title.clone(),
             content: fi.content.to_string(),
             pub_date: fi.pub_date,
             guid: fi.guid.to_string(),
@@ -77,7 +76,8 @@ async fn main() {
         println!("{:?}", receiver.recv().await);
         x -= 1
     }
-    let detected = collector.detect_feeds("https://google.com").await;
+    let detected =
+        tokio::spawn(async move { collector.detect_feeds("https://google.com").await }).await;
     println!("{:?}", detected);
 }
 

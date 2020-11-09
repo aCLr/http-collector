@@ -152,7 +152,7 @@ where
     fn detect_possible_feeds(
         &self,
         link: &str,
-        parsed_doc: &Html,
+        parsed_doc: Html,
     ) -> Result<Vec<(String, FeedKind)>> {
         let page_scrape_url = Url::parse(link)?;
         let mut for_check: Vec<(String, FeedKind)> = vec![];
@@ -185,7 +185,10 @@ where
                 let parsed_href = Url::parse(href)?;
 
                 for_check.push((parsed_href.join("wp/v2/posts")?.to_string(), FeedKind::WP));
-                for_check.push((page_scrape_url.join("wp/v2/posts")?.to_string(), FeedKind::WP));
+                for_check.push((
+                    page_scrape_url.join("wp/v2/posts")?.to_string(),
+                    FeedKind::WP,
+                ));
                 match for_check
                     .iter()
                     .find(|(link, _kind)| link.ends_with("feed/"))
@@ -198,22 +201,25 @@ where
                 };
             };
         };
-        if for_check.is_empty() {
-            let selector = Selector::parse(r#"a[href*="rss"]"#).unwrap();
-            let x = parsed_doc.select(&selector);
-            println!("{:?}", x);
-            for element in x{
-                element.value().attr("href").map(|href| {
-                    let mut link = String::new();
-                    if href.starts_with("/") {
-                        link.push_str(page_scrape_url.join(href).unwrap().as_str());
-                    } else {
-                        link.push_str(href);
-                    }
-                    for_check.push((link.to_string(), FeedKind::RSS));
-                });
-            }
-        };
+        #[cfg(feature = "rss_predict")]
+        {
+            if for_check.is_empty() {
+                let selector = Selector::parse(r#"a[href~="rss"]"#).unwrap();
+                let x = parsed_doc.select(&selector);
+                println!("{:?}", x);
+                for element in x {
+                    element.value().attr("href").map(|href| {
+                        let mut link = String::new();
+                        if href.starts_with("/") {
+                            link.push_str(page_scrape_url.join(href).unwrap().as_str());
+                        } else {
+                            link.push_str(href);
+                        }
+                        for_check.push((link.to_string(), FeedKind::RSS));
+                    });
+                }
+            };
+        }
         Ok(for_check)
     }
 
@@ -238,13 +244,16 @@ where
         let content = self.scrape(link).await?;
 
         let mut result = self.traverse_parsers(link, content.as_str());
-        let parsed_doc = Html::parse_document(content.as_str());
-        let icon_selector = Selector::parse("link[rel=\"icon\"]").unwrap();
-        let favicon = match parsed_doc.select(&icon_selector).next() {
-            None => None,
-            Some(node) => node.value().attr("href").map(|h| h.to_string()),
+        let favicon;
+        let for_check = {
+            let parsed_doc = Html::parse_document(content.as_str());
+            let icon_selector = Selector::parse("link[rel=\"icon\"]").unwrap();
+            favicon = match parsed_doc.select(&icon_selector).next() {
+                None => None,
+                Some(node) => node.value().attr("href").map(|h| h.to_string()),
+            };
+            self.detect_possible_feeds(link, parsed_doc)?
         };
-        let for_check = self.detect_possible_feeds(link, &parsed_doc)?;
 
         let mut checks = vec![];
         for_check
@@ -359,12 +368,11 @@ fn parse_rss_feed(link: &str, content: &str) -> Result<Feed> {
     })
 }
 
-
 #[cfg(test)]
 mod tests {
     use crate::collector::{get_image, HttpCollector};
-    use scraper::Html;
     use crate::models::FeedKind;
+    use scraper::Html;
 
     #[test]
     fn test_get_image() {
@@ -386,7 +394,8 @@ mod tests {
 
     #[test]
     fn test_detect_possible_feeds() {
-        let content = Html::parse_fragment(r#"
+        let content = Html::parse_fragment(
+            r#"
         <html>
         <head>
         <link type="application/rss+xml" href="https://test_detect_possible_feeds.rss">
@@ -401,14 +410,24 @@ mod tests {
         </div>
         </body>
         </html>
-        "#);
+        "#,
+        );
         let collector = HttpCollector::new();
-        let detected = collector.detect_possible_feeds("https://test.test", &content).unwrap();
+        let detected = collector
+            .detect_possible_feeds("https://test.test", &content)
+            .unwrap();
+        #[cfg(feature = "rss_predict")]
         assert_eq!(
             detected,
             vec![
-                ("https://test_detect_possible_feeds.rss".to_string(), FeedKind::RSS),
-                ("https://test_detect_possible_feeds.atom".to_string(), FeedKind::Atom),
+                (
+                    "https://test_detect_possible_feeds.rss".to_string(),
+                    FeedKind::RSS
+                ),
+                (
+                    "https://test_detect_possible_feeds.atom".to_string(),
+                    FeedKind::Atom
+                ),
                 ("https://wp-url.wp/wp/v2/posts".to_string(), FeedKind::WP),
                 ("https://test.test/wp/v2/posts".to_string(), FeedKind::WP),
                 ("https://wp-url.wp/feed/".to_string(), FeedKind::RSS),
@@ -416,6 +435,25 @@ mod tests {
                 ("https://a.com/feeds/rss/".to_string(), FeedKind::RSS),
                 ("https://a.com/feeds/rss".to_string(), FeedKind::RSS),
                 ("https://test.test/feeds/rss".to_string(), FeedKind::RSS),
+            ]
+        );
+
+        #[cfg(not(feature = "rss_predict"))]
+        assert_eq!(
+            detected,
+            vec![
+                (
+                    "https://test_detect_possible_feeds.rss".to_string(),
+                    FeedKind::RSS
+                ),
+                (
+                    "https://test_detect_possible_feeds.atom".to_string(),
+                    FeedKind::Atom
+                ),
+                ("https://wp-url.wp/wp/v2/posts".to_string(), FeedKind::WP),
+                ("https://test.test/wp/v2/posts".to_string(), FeedKind::WP),
+                ("https://wp-url.wp/feed/".to_string(), FeedKind::RSS),
+                ("https://test.test/feed/".to_string(), FeedKind::RSS),
             ]
         )
     }
