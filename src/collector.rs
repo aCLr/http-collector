@@ -188,7 +188,15 @@ where
                 let parsed_href = Url::parse(href)?;
 
                 for_check.push((parsed_href.join("wp/v2/posts")?.to_string(), FeedKind::WP));
-                for_check.push((page_scrape_url.join("feed/")?.to_string(), FeedKind::RSS));
+                match for_check
+                    .iter()
+                    .find(|(link, kind)| link.ends_with("feed/"))
+                {
+                    None => {
+                        for_check.push((page_scrape_url.join("feed/")?.to_string(), FeedKind::RSS))
+                    }
+                    Some(_) => {}
+                };
             };
         };
         if for_check.is_empty() {
