@@ -18,10 +18,7 @@ serde_derive = "1.0"
 chrono = {version ="0.4.13"}
 async-trait = "0.1.41"
 tokio = {version = "0.2.5", features = ["full"]}
-
-[dependencies.select]
-git = "https://github.com/aCLr/select.rs/"
-branch="regex-attr"
+scraper = "0.12.0"
 
 [dependencies.rss]
 version = "1.0"

@@ -1,7 +1,6 @@
 use atom_syndication::Error as AtomError;
 use rss::Error as RSSError;
 use std::fmt;
-use url::ParseError;
 
 pub type Result<T> = std::result::Result<T, Error>;
 

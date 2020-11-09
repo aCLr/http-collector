@@ -1,12 +1,10 @@
-extern crate select;
 use async_trait::async_trait;
 
 use atom_syndication::Feed as AtomFeed;
 use futures::future::join_all;
 use reqwest::{Client, Response};
 use rss::Channel;
-use select::document::Document;
-use select::predicate::{Attr, Name, Predicate};
+use scraper::{Html, Selector};
 use std::str::FromStr;
 use url::Url;
 
@@ -29,11 +27,11 @@ pub struct CacheStub {}
 
 #[async_trait]
 impl Cache for CacheStub {
-    async fn get(&self, link: &str) -> Option<FeedKind> {
+    async fn get(&self, link_: &str) -> Option<FeedKind> {
         None
     }
 
-    async fn set(&self, link: &str, feed_kind: &FeedKind) -> Result<()> {
+    async fn set(&self, link_: &str, feed_kind_: &FeedKind) -> Result<()> {
         Ok(())
     }
 }
@@ -151,24 +149,26 @@ where
         })?)
     }
 
-    async fn detect_possible_feeds(
+    fn detect_possible_feeds(
         &self,
         link: &str,
-        scraped_content: &str,
+        parsed_doc: &Html,
     ) -> Result<Vec<(String, FeedKind)>> {
         let page_scrape_url = Url::parse(link)?;
         let mut for_check: Vec<(String, FeedKind)> = vec![];
-        // detect rss content
-        let parsed_doc = Document::from_read(scraped_content.as_bytes()).map_err(|_| Error {
-            message: "cannot parse html".to_string(),
-        })?;
 
-        for (kind, link_type) in vec![
-            (FeedKind::RSS, "application/rss+xml"),
-            (FeedKind::Atom, "application/atom+xml"),
+        for (kind, selector) in vec![
+            (
+                FeedKind::RSS,
+                Selector::parse(r#"link[type="application/rss+xml"]"#).unwrap(),
+            ),
+            (
+                FeedKind::Atom,
+                Selector::parse(r#"link[type="application/atom+xml"]"#).unwrap(),
+            ),
         ] {
-            for element in parsed_doc.find(Name("link").and(Attr("type", link_type))) {
-                element.attr("href").map(|href| {
+            for element in parsed_doc.select(&selector) {
+                element.value().attr("href").map(|href| {
                     let mut link = String::new();
                     if href.starts_with("/") {
                         link.push_str(page_scrape_url.join(href).unwrap().as_str());
@@ -179,29 +179,31 @@ where
                 });
             }
         }
-
-        if let Some(found_wp) = parsed_doc
-            .find(Name("link").and(Attr("rel", "https://api.w.org/")))
-            .next()
-        {
-            if let Some(href) = found_wp.attr("href") {
+        let wp_selector = Selector::parse(r#"link[rel="https://api.w.org/"]"#).unwrap();
+        if let Some(found_wp) = parsed_doc.select(&wp_selector).next() {
+            if let Some(href) = found_wp.value().attr("href") {
                 let parsed_href = Url::parse(href)?;
 
                 for_check.push((parsed_href.join("wp/v2/posts")?.to_string(), FeedKind::WP));
+                for_check.push((page_scrape_url.join("wp/v2/posts")?.to_string(), FeedKind::WP));
                 match for_check
                     .iter()
-                    .find(|(link, kind)| link.ends_with("feed/"))
+                    .find(|(link, _kind)| link.ends_with("feed/"))
                 {
                     None => {
-                        for_check.push((page_scrape_url.join("feed/")?.to_string(), FeedKind::RSS))
+                        for_check.push((parsed_href.join("feed/")?.to_string(), FeedKind::RSS));
+                        for_check.push((page_scrape_url.join("feed/")?.to_string(), FeedKind::RSS));
                     }
                     Some(_) => {}
                 };
             };
         };
         if for_check.is_empty() {
-            for element in parsed_doc.find(Attr("href", regex::Regex::new("/rss").unwrap())) {
-                element.attr("href").map(|href| {
+            let selector = Selector::parse(r#"a[href*="rss"]"#).unwrap();
+            let x = parsed_doc.select(&selector);
+            println!("{:?}", x);
+            for element in x{
+                element.value().attr("href").map(|href| {
                     let mut link = String::new();
                     if href.starts_with("/") {
                         link.push_str(page_scrape_url.join(href).unwrap().as_str());
@@ -236,7 +238,13 @@ where
         let content = self.scrape(link).await?;
 
         let mut result = self.traverse_parsers(link, content.as_str());
-        let for_check = self.detect_possible_feeds(link, content.as_str()).await?;
+        let parsed_doc = Html::parse_document(content.as_str());
+        let icon_selector = Selector::parse("link[rel=\"icon\"]").unwrap();
+        let favicon = match parsed_doc.select(&icon_selector).next() {
+            None => None,
+            Some(node) => node.value().attr("href").map(|h| h.to_string()),
+        };
+        let for_check = self.detect_possible_feeds(link, &parsed_doc)?;
 
         let mut checks = vec![];
         for_check
@@ -250,7 +258,11 @@ where
             .await
             .into_iter()
             .map(|check_result| match check_result {
-                Ok(feed) => {
+                Ok(mut feed) => {
+                    match feed.image {
+                        None => feed.image = favicon.clone(),
+                        Some(_) => {}
+                    };
                     result.push(feed);
                 }
                 Err(err) => {
@@ -263,39 +275,13 @@ where
 }
 
 fn get_image(content: &str) -> Option<String> {
-    let parsed_doc = Document::from_read(content.as_bytes());
-    match parsed_doc {
-        Ok(doc) => {
-            let image = match doc.find(Name("img")).next() {
-                None => None,
-                Some(img) => img.attr("src").map(|x| x.to_string()),
-            };
-            image
-        }
-        Err(_) => None,
-    }
-}
-
-#[cfg(test)]
-mod tests {
-
-    #[test]
-    fn test_get_image() {
-        let content = "\
-        <p><img src=\"https://habrastorage.org/webt/4n/c1/v0/4nc1v0ifaa8rzyrzq5q1q7r4t8q.png\"></p>
-        <br>
-        <p>В этой статье я хочу разобрать один из самых популярных опенсорс-инструментов,
-        <a href=\"https://nodered.org\" rel=\"nofollow\">Node-RED</a>,\
-        с точки зрения создания простых прототипов приложений с минимумом программирования</p>";
-        let image = get_image(content);
-        assert_eq!(
-            image,
-            Some(
-                "https://habrastorage.org/webt/4n/c1/v0/4nc1v0ifaa8rzyrzq5q1q7r4t8q.png"
-                    .to_string()
-            )
-        )
-    }
+    let image_selector = Selector::parse("img").unwrap();
+    let parsed_doc = Html::parse_document(content);
+    let image = match parsed_doc.select(&image_selector).next() {
+        None => None,
+        Some(img) => img.value().attr("src").map(|x| x.to_string()),
+    };
+    image
 }
 
 fn current_time() -> chrono::DateTime<chrono::FixedOffset> {
@@ -371,4 +357,66 @@ fn parse_rss_feed(link: &str, content: &str) -> Result<Feed> {
         name: channel.title().to_string(),
         content: feed_items,
     })
+}
+
+
+#[cfg(test)]
+mod tests {
+    use crate::collector::{get_image, HttpCollector};
+    use scraper::Html;
+    use crate::models::FeedKind;
+
+    #[test]
+    fn test_get_image() {
+        let content = "\
+        <p><img src=\"https://habrastorage.org/webt/4n/c1/v0/4nc1v0ifaa8rzyrzq5q1q7r4t8q.png\"></p>
+        <br>
+        <p>В этой статье я хочу разобрать один из самых популярных опенсорс-инструментов,
+        <a href=\"https://nodered.org\" rel=\"nofollow\">Node-RED</a>,\
+        с точки зрения создания простых прототипов приложений с минимумом программирования</p>";
+        let image = get_image(content);
+        assert_eq!(
+            image,
+            Some(
+                "https://habrastorage.org/webt/4n/c1/v0/4nc1v0ifaa8rzyrzq5q1q7r4t8q.png"
+                    .to_string()
+            )
+        )
+    }
+
+    #[test]
+    fn test_detect_possible_feeds() {
+        let content = Html::parse_fragment(r#"
+        <html>
+        <head>
+        <link type="application/rss+xml" href="https://test_detect_possible_feeds.rss">
+        <link type="application/atom+xml" href="https://test_detect_possible_feeds.atom">
+        <link rel="https://api.w.org/" href="https://wp-url.wp">
+        </head>
+        <body>
+        <div>
+        <a href="https://a.com/feeds/rss/"></a>
+        <a href="https://a.com/feeds/rss"></a>
+        <a href="/feeds/rss"></a>
+        </div>
+        </body>
+        </html>
+        "#);
+        let collector = HttpCollector::new();
+        let detected = collector.detect_possible_feeds("https://test.test", &content).unwrap();
+        assert_eq!(
+            detected,
+            vec![
+                ("https://test_detect_possible_feeds.rss".to_string(), FeedKind::RSS),
+                ("https://test_detect_possible_feeds.atom".to_string(), FeedKind::Atom),
+                ("https://wp-url.wp/wp/v2/posts".to_string(), FeedKind::WP),
+                ("https://test.test/wp/v2/posts".to_string(), FeedKind::WP),
+                ("https://wp-url.wp/feed/".to_string(), FeedKind::RSS),
+                ("https://test.test/feed/".to_string(), FeedKind::RSS),
+                ("https://a.com/feeds/rss/".to_string(), FeedKind::RSS),
+                ("https://a.com/feeds/rss".to_string(), FeedKind::RSS),
+                ("https://test.test/feeds/rss".to_string(), FeedKind::RSS),
+            ]
+        )
+    }
 }
