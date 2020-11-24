@@ -1,8 +1,8 @@
 use async_trait::async_trait;
 use chrono::NaiveDateTime;
 use http_collector::collector::{HttpCollector, ResultsHandler};
-use http_collector::error::{Error, Result};
 use http_collector::models::{Feed, FeedItem, FeedKind};
+use http_collector::result::Result;
 use std::sync::Arc;
 use tokio::sync::{mpsc, Mutex};
 
@@ -96,9 +96,7 @@ impl ResultsHandler for Handler {
     async fn process(&self, result: Result<(&Feed, FeedKind, String)>) {
         let update = match result {
             Ok((updates, kind, link)) => Ok((updates.clone(), kind, link)),
-            Err(err) => Err(Error {
-                message: err.to_string(),
-            }),
+            Err(err) => Err(err),
         };
         let mut local = self.channel.lock().await;
         local.send(update).await.unwrap();

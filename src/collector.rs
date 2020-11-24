@@ -8,8 +8,8 @@ use scraper::{Html, Selector};
 use std::str::FromStr;
 use url::Url;
 
-use crate::error::{Error, Result};
 use crate::models::*;
+use crate::result::{Error, Result};
 use tokio::sync::mpsc;
 
 #[async_trait]
@@ -95,9 +95,7 @@ where
         let content = self.scrape(link).await?;
         let feeds = self.traverse_parsers(link, content.as_str());
         match feeds.len() {
-            0 => Err(Error {
-                message: "feeds not found".to_string(),
-            }),
+            0 => Err(Error::NoFeed),
             1 => Ok(feeds.first().unwrap().clone()),
             _ => Ok(feeds
                 .iter()
@@ -123,9 +121,7 @@ where
         let result = match kind {
             FeedKind::RSS => self.scrape_rss(link).await?,
             FeedKind::Atom => self.scrape_atom(link).await?,
-            FeedKind::WP => Err(Error {
-                message: "wp not supported".to_string(),
-            })?,
+            FeedKind::WP => Err(Error::SourceNotSupported)?,
         };
         Ok(result)
     }
@@ -140,13 +136,9 @@ where
 
     async fn scrape(&self, link: &str) -> Result<String> {
         debug!("start scrape {} {:?}", link, std::thread::current().id());
-        let response: Response = self.client.get(link).send().await.map_err(|_err| Error {
-            message: "can't get text".to_string(),
-        })?;
+        let response: Response = self.client.get(link).send().await?;
         debug!("scraped {} {:?}", link, std::thread::current().id());
-        Ok(response.text().await.map_err(|_err| Error {
-            message: "can't get text".to_string(),
-        })?)
+        Ok(response.text().await?)
     }
 
     fn detect_possible_feeds(
@@ -201,12 +193,10 @@ where
                 };
             };
         };
-        #[cfg(feature = "rss_predict")]
         {
             if for_check.is_empty() {
                 let selector = Selector::parse(r#"a[href~="rss"]"#).unwrap();
                 let x = parsed_doc.select(&selector);
-                println!("{:?}", x);
                 for element in x {
                     element.value().attr("href").map(|href| {
                         let mut link = String::new();
@@ -275,7 +265,7 @@ where
                     result.push(feed);
                 }
                 Err(err) => {
-                    error!("{}", err.message.as_str());
+                    error!("{:?}", err);
                 }
             })
             .for_each(drop);

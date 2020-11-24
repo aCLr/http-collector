@@ -5,5 +5,5 @@ extern crate log;
 extern crate serde_derive;
 
 pub mod collector;
-pub mod error;
 pub mod models;
+pub mod result;
